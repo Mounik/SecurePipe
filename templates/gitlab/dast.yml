@@ -1,0 +1,26 @@
+# GitLab CI — DAST Only
+
+stages:
+  - dast
+
+variables:
+  SECUREPIPE_OUTPUT: "securepipe-reports"
+
+zap-baseline:
+  stage: dast
+  image:
+    name: owasp/zap2docker-stable:latest
+    entrypoint: [""]
+  script:
+    - |
+      if [ -z "${SECUREPIPE_DAST_URL}" ]; then
+        echo "Set SECUREPIPE_DAST_URL variable"
+        exit 1
+      fi
+    - zap-baseline.py -t ${SECUREPIPE_DAST_URL} -J dast-results.json || true
+    - mkdir -p ${SECUREPIPE_OUTPUT}
+    - cp /zap/json-report/dast-results.json ${SECUREPIPE_OUTPUT}/ 2>/dev/null || true
+  artifacts:
+    paths:
+      - ${SECUREPIPE_OUTPUT}/
+    expire_in: 30 days

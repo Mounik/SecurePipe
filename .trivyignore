@@ -1,0 +1,5 @@
+# Dependency ignore list for Trivy
+# Format: CVE,Reason
+
+# Example:
+# CVE-2023-XXXX, Not applicable — using vendored patch

@@ -1,0 +1,8 @@
+# .gitleaks.toml — Gitleaks configuration for SecurePipe demo
+
+[allowlist]
+description = "Global allow list"
+paths = [
+    '''examples/vulnerable-app/.*''',
+    '''\.securepipe\.yml$''',
+]

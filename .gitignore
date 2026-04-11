@@ -1,0 +1,22 @@
+# SecurePipe
+
+# Reports
+securepipe-reports/
+
+# Scanner caches
+.semgrep-cache/
+.trivy-cache/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

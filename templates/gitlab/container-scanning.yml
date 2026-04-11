@@ -1,0 +1,35 @@
+# GitLab CI — Container Scanning Only
+
+stages:
+  - container
+
+variables:
+  SECUREPIPE_OUTPUT: "securepipe-reports"
+
+trivy-container:
+  stage: container
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  script:
+    - |
+      if [ -z "${SECUREPIPE_CONTAINER_IMAGE}" ]; then
+        echo "Set SECUREPIPE_CONTAINER_IMAGE variable"
+        exit 1
+      fi
+    - trivy image --format json --output ${SECUREPIPE_OUTPUT}/container-results.json ${SECUREPIPE_CONTAINER_IMAGE}
+  artifacts:
+    paths:
+      - ${SECUREPIPE_OUTPUT}/
+    expire_in: 30 days
+
+hadolint:
+  stage: container
+  image:
+    name: hadolint/hadolint:latest-alpine
+    entrypoint: [""]
+  script:
+    - hadolint Dockerfile
+  rules:
+    - exists:
+        - Dockerfile

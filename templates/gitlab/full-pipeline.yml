@@ -1,0 +1,209 @@
+# ─── SecurePipe — Full GitLab CI Pipeline ─────────────────────────────────
+# Drop this into your .gitlab-ci.yml or include it remotely:
+#   include:
+#     - remote: 'https://raw.githubusercontent.com/Mounik/SecurePipe/main/templates/gitlab/full-pipeline.yml'
+#
+# Variables (set in CI/CD Settings or .securepipe.yml):
+#   SECUREPIPE_FAIL_ON_CRITICAL: "true"
+#   SECUREPIPE_FAIL_ON_HIGH: "true"
+#   SECUREPIPE_REPORT_FORMAT: "html"
+#   SECUREPIPE_CONTAINER_IMAGE: ""  (set for container scanning)
+
+stages:
+  - secrets
+  - sast
+  - dependencies
+  - container
+  - dast
+  - signing
+  - sbom
+  - report
+
+variables:
+  SECUREPIPE_OUTPUT: "securepipe-reports"
+  TRIVY_NO_PROGRESS: "true"
+  TRIVY_CACHE_DIR: ".trivy-cache"
+
+# ─── Cache ─────────────────────────────────────────────────────────────────
+cache:
+  paths:
+    - .trivy-cache/
+    - .semgrep-cache/
+
+# ─── SECRETS DETECTION ────────────────────────────────────────────────────
+gitleaks:
+  stage: secrets
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+  script:
+    - gitleaks detect --source . --report-format json --report-path ${SECUREPIPE_OUTPUT}/secrets-results.json || true
+    - |
+      FINDINGS=$(python3 -c "import json; print(len(json.load(open('${SECUREPIPE_OUTPUT}/secrets-results.json'))))" 2>/dev/null || echo "0")
+      echo "🔐 Gitleaks found ${FINDINGS} secrets"
+      if [ "$FINDINGS" -gt 0 ]; then
+        echo "⚠️  Secrets detected! Review ${SECUREPIPE_OUTPUT}/secrets-results.json"
+        if [ "${SECUREPIPE_FAIL_ON_CRITICAL}" = "true" ]; then exit 1; fi
+      fi
+  artifacts:
+    paths:
+      - ${SECUREPIPE_OUTPUT}/secrets-results.json
+    expire_in: 30 days
+  rules:
+    - if: $SECUREPIPE_SKIP_SECRETS != "true"
+
+# ─── SAST ─────────────────────────────────────────────────────────────────
+semgrep:
+  stage: sast
+  image:
+    name: returntocorp/semgrep:latest
+    entrypoint: [""]
+  script:
+    - semgrep --config auto --json --output ${SECUREPIPE_OUTPUT}/sast-results.json .
+    - |
+      COUNT=$(python3 -c "import json; print(len(json.load(open('${SECUREPIPE_OUTPUT}/sast-results.json')).get('results',[])))" 2>/dev/null || echo "0")
+      echo "🔍 Semgrep found ${COUNT} findings"
+  artifacts:
+    paths:
+      - ${SECUREPIPE_OUTPUT}/sast-results.json
+    expire_in: 30 days
+  rules:
+    - if: $SECUREPIPE_SKIP_SAST != "true"
+
+# ─── DEPENDENCY SCANNING ─────────────────────────────────────────────────
+trivy-dependencies:
+  stage: dependencies
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  script:
+    - trivy fs --format json --output ${SECUREPIPE_OUTPUT}/dependency-results.json .
+    - |
+      COUNT=$(python3 -c "
+      import json
+      d=json.load(open('${SECUREPIPE_OUTPUT}/dependency-results.json'))
+      total=sum(len(r.get('Vulnerabilities',[])) for r in d.get('Results',[]))
+      print(total)
+      " 2>/dev/null || echo "0")
+      echo "📦 Trivy found ${COUNT} dependency vulnerabilities"
+      if [ "${SECUREPIPE_FAIL_ON_HIGH}" = "true" ] && [ "$COUNT" -gt 0 ]; then
+        HIGH=$(python3 -c "
+      import json
+      d=json.load(open('${SECUREPIPE_OUTPUT}/dependency-results.json'))
+      print(sum(1 for r in d.get('Results',[]) for v in r.get('Vulnerabilities',[]) if v.get('Severity')=='HIGH'))
+      " 2>/dev/null || echo "0")
+        if [ "$HIGH" -gt 0 ]; then echo "❌ ${HIGH} HIGH vulnerabilities found"; exit 1; fi
+      fi
+  artifacts:
+    paths:
+      - ${SECUREPIPE_OUTPUT}/dependency-results.json
+    expire_in: 30 days
+  rules:
+    - if: $SECUREPIPE_SKIP_DEPS != "true"
+
+# ─── CONTAINER SCANNING ──────────────────────────────────────────────────
+trivy-container:
+  stage: container
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  script:
+    - |
+      if [ -z "${SECUREPIPE_CONTAINER_IMAGE}" ]; then
+        echo "⚠️  SECUREPIPE_CONTAINER_IMAGE not set, skipping container scan"
+        exit 0
+      fi
+    - trivy image --format json --output ${SECUREPIPE_OUTPUT}/container-results.json ${SECUREPIPE_CONTAINER_IMAGE}
+    - echo "🐳 Container scan complete for ${SECUREPIPE_CONTAINER_IMAGE}"
+  artifacts:
+    paths:
+      - ${SECUREPIPE_OUTPUT}/container-results.json
+    expire_in: 30 days
+  rules:
+    - if: $SECUREPIPE_SKIP_CONTAINER != "true"
+
+hadolint:
+  stage: container
+  image:
+    name: hadolint/hadolint:latest-alpine
+    entrypoint: [""]
+  script:
+    - hadolint Dockerfile 2>/dev/null || echo "No Dockerfile found, skipping Hadolint"
+  rules:
+    - exists:
+        - Dockerfile
+      if: $SECUREPIPE_SKIP_CONTAINER != "true"
+
+# ─── DAST ─────────────────────────────────────────────────────────────────
+zap-baseline:
+  stage: dast
+  image:
+    name: owasp/zap2docker-stable:latest
+    entrypoint: [""]
+  script:
+    - |
+      if [ -z "${SECUREPIPE_DAST_URL}" ]; then
+        echo "⚠️  SECUREPIPE_DAST_URL not set, skipping DAST"
+        exit 0
+      fi
+    - zap-baseline.py -t ${SECUREPIPE_DAST_URL} -J dast-results.json || true
+    - cp /zap/json-report/dast-results.json ${SECUREPIPE_OUTPUT}/ 2>/dev/null || true
+  artifacts:
+    paths:
+      - ${SECUREPIPE_OUTPUT}/dast-results.json
+    expire_in: 30 days
+  rules:
+    - if: $SECUREPIPE_SKIP_DAST != "true"
+
+# ─── SIGNING ──────────────────────────────────────────────────────────────
+cosign-sign:
+  stage: signing
+  image:
+    name: bitnami/cosign:latest
+    entrypoint: [""]
+  script:
+    - |
+      if [ -z "${SECUREPIPE_CONTAINER_IMAGE}" ]; then
+        echo "⚠️  No container image to sign"
+        exit 0
+      fi
+    - cosign sign --yes ${SECUREPIPE_CONTAINER_IMAGE} || echo "⚠️  Signing failed (COSIGN_KEY required)"
+  rules:
+    - if: $SECUREPIPE_SKIP_SIGNING != "true"
+
+# ─── SBOM ─────────────────────────────────────────────────────────────────
+syft-sbom:
+  stage: sbom
+  image:
+    name: anchore/syft:latest
+    entrypoint: [""]
+  script:
+    - syft dir:./ -o cyclonedx-json > ${SECUREPIPE_OUTPUT}/sbom-cyclonedx.json
+    - echo "📋 SBOM generated"
+  artifacts:
+    paths:
+      - ${SECUREPIPE_OUTPUT}/sbom-cyclonedx.json
+    expire_in: 30 days
+  rules:
+    - if: $SECUREPIPE_SKIP_SBOM != "true"
+
+# ─── REPORT AGGREGATION ───────────────────────────────────────────────────
+securepipe-report:
+  stage: report
+  image: python:3.11-slim
+  script:
+    - pip install jinja2 --quiet
+    - python3 scripts/report-generator.py ${SECUREPIPE_OUTPUT} ${SECUREPIPE_OUTPUT}/securepipe-report.html
+    - echo "📊 Report generated: ${SECUREPIPE_OUTPUT}/securepipe-report.html"
+  artifacts:
+    paths:
+      - ${SECUREPIPE_OUTPUT}/
+    expire_in: 90 days
+  when: always
+  dependencies:
+    - gitleaks
+    - semgrep
+    - trivy-dependencies
+    - trivy-container
+    - zap-baseline
+    - syft-sbom

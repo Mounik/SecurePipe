@@ -1,0 +1,35 @@
+# GitLab CI — Signing & SBOM Only
+
+stages:
+  - signing
+  - sbom
+
+variables:
+  SECUREPIPE_OUTPUT: "securepipe-reports"
+
+cosign-sign:
+  stage: signing
+  image:
+    name: bitnami/cosign:latest
+    entrypoint: [""]
+  script:
+    - |
+      if [ -z "${SECUREPIPE_CONTAINER_IMAGE}" ]; then
+        echo "Set SECUREPIPE_CONTAINER_IMAGE variable"
+        exit 1
+      fi
+    - cosign sign --yes ${SECUREPIPE_CONTAINER_IMAGE}
+  rules:
+    - if: $SECUREPIPE_SKIP_SIGNING != "true"
+
+syft-sbom:
+  stage: sbom
+  image:
+    name: anchore/syft:latest
+    entrypoint: [""]
+  script:
+    - syft dir:./ -o cyclonedx-json > ${SECUREPIPE_OUTPUT}/sbom-cyclonedx.json
+  artifacts:
+    paths:
+      - ${SECUREPIPE_OUTPUT}/
+    expire_in: 30 days

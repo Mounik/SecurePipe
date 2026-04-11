@@ -1,0 +1,39 @@
+version: "1.0"
+
+settings:
+  fail_on_critical: true
+  fail_on_high: true
+  report_format: html
+  output_dir: securepipe-reports/
+
+sast:
+  enabled: true
+  tools: [semgrep, codeql]
+  languages: [python, javascript, go, dockerfile, yaml]
+
+secrets:
+  enabled: true
+  tools: [gitleaks]
+
+dependencies:
+  enabled: true
+  tools: [trivy, owasp-depcheck]
+  ignore_cves: []
+
+container:
+  enabled: true
+  tools: [trivy, hadolint]
+  image: ""
+
+dast:
+  enabled: true
+  tools: [zap]
+  target_url: "http://localhost:8080"
+
+signing:
+  enabled: true
+  tools: [cosign]
+
+sbom:
+  enabled: true
+  format: cyclonedx

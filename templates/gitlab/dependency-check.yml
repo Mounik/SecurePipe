@@ -1,0 +1,20 @@
+# GitLab CI — Dependency Scanning Only
+
+stages:
+  - dependencies
+
+variables:
+  SECUREPIPE_OUTPUT: "securepipe-reports"
+  TRIVY_NO_PROGRESS: "true"
+
+trivy-dependencies:
+  stage: dependencies
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  script:
+    - trivy fs --format json --output ${SECUREPIPE_OUTPUT}/dependency-results.json .
+  artifacts:
+    paths:
+      - ${SECUREPIPE_OUTPUT}/
+    expire_in: 30 days

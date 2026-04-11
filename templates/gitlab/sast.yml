@@ -1,0 +1,23 @@
+# GitLab CI — SAST Only
+# Use when you only want static analysis
+
+stages:
+  - sast
+
+variables:
+  SECUREPIPE_OUTPUT: "securepipe-reports"
+
+semgrep:
+  stage: sast
+  image:
+    name: returntocorp/semgrep:latest
+    entrypoint: [""]
+  script:
+    - semgrep --config auto --json --output ${SECUREPIPE_OUTPUT}/sast-results.json .
+  artifacts:
+    paths:
+      - ${SECUREPIPE_OUTPUT}/
+    expire_in: 30 days
+  cache:
+    paths:
+      - .semgrep-cache/
