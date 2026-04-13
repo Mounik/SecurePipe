@@ -10,10 +10,16 @@ variables:
 trivy-dependencies:
   stage: dependencies
   image:
-    name: aquasec/trivy:latest
+    name: aquasec/trivy:0.51
     entrypoint: [""]
   script:
+    - mkdir -p ${SECUREPIPE_OUTPUT}
     - trivy fs --format json --output ${SECUREPIPE_OUTPUT}/dependency-results.json .
+    - |
+      COUNT=$(jq '[.Results[]?.Vulnerabilities // [] | length] | add // 0' ${SECUREPIPE_OUTPUT}/dependency-results.json 2>/dev/null || echo "0")
+      echo "Trivy found ${COUNT} dependency vulnerabilities"
+      CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' ${SECUREPIPE_OUTPUT}/dependency-results.json 2>/dev/null || echo "0")
+      if [ "${SECUREPIPE_FAIL_ON_CRITICAL}" = "true" ] && [ "$CRITICAL" -gt 0 ]; then exit 1; fi
   artifacts:
     paths:
       - ${SECUREPIPE_OUTPUT}/

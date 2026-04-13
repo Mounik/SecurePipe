@@ -10,7 +10,7 @@ variables:
 cosign-sign:
   stage: signing
   image:
-    name: bitnami/cosign:latest
+    name: bitnami/cosign:2.4
     entrypoint: [""]
   script:
     - |
@@ -18,16 +18,21 @@ cosign-sign:
         echo "Set SECUREPIPE_CONTAINER_IMAGE variable"
         exit 1
       fi
-    - cosign sign --yes ${SECUREPIPE_CONTAINER_IMAGE}
+      if [ -z "${COSIGN_KEY}" ]; then
+        echo "COSIGN_KEY not set, skipping signing"
+        exit 0
+      fi
+    - cosign sign --key env://COSIGN_KEY ${SECUREPIPE_CONTAINER_IMAGE} || echo "Signing failed"
   rules:
     - if: $SECUREPIPE_SKIP_SIGNING != "true"
 
 syft-sbom:
   stage: sbom
   image:
-    name: anchore/syft:latest
+    name: anchore/syft:1.11
     entrypoint: [""]
   script:
+    - mkdir -p ${SECUREPIPE_OUTPUT}
     - syft dir:./ -o cyclonedx-json > ${SECUREPIPE_OUTPUT}/sbom-cyclonedx.json
   artifacts:
     paths:

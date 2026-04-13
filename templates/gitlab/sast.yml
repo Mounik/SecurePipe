@@ -10,10 +10,14 @@ variables:
 semgrep:
   stage: sast
   image:
-    name: returntocorp/semgrep:latest
+    name: returntocorp/semgrep:1.64
     entrypoint: [""]
   script:
-    - semgrep --config auto --json --output ${SECUREPIPE_OUTPUT}/sast-results.json .
+    - mkdir -p ${SECUREPIPE_OUTPUT}
+    - semgrep --config ${SEMGREP_CONFIG:-auto} --json --output ${SECUREPIPE_OUTPUT}/sast-results.json .
+    - |
+      COUNT=$(jq '.results | length' ${SECUREPIPE_OUTPUT}/sast-results.json 2>/dev/null || echo "0")
+      echo "Semgrep found ${COUNT} findings"
   artifacts:
     paths:
       - ${SECUREPIPE_OUTPUT}/

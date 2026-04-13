@@ -24,7 +24,6 @@ variables:
   TRIVY_NO_PROGRESS: "true"
   TRIVY_CACHE_DIR: ".trivy-cache"
 
-# ─── Cache ─────────────────────────────────────────────────────────────────
 cache:
   paths:
     - .trivy-cache/
@@ -34,15 +33,16 @@ cache:
 gitleaks:
   stage: secrets
   image:
-    name: zricethezav/gitleaks:latest
+    name: zricethezav/gitleaks:8.18
     entrypoint: [""]
   script:
+    - mkdir -p ${SECUREPIPE_OUTPUT}
     - gitleaks detect --source . --report-format json --report-path ${SECUREPIPE_OUTPUT}/secrets-results.json || true
     - |
-      FINDINGS=$(python3 -c "import json; print(len(json.load(open('${SECUREPIPE_OUTPUT}/secrets-results.json'))))" 2>/dev/null || echo "0")
-      echo "🔐 Gitleaks found ${FINDINGS} secrets"
+      FINDINGS=$(jq 'length' ${SECUREPIPE_OUTPUT}/secrets-results.json 2>/dev/null || echo "0")
+      echo "Gitleaks found ${FINDINGS} secrets"
       if [ "$FINDINGS" -gt 0 ]; then
-        echo "⚠️  Secrets detected! Review ${SECUREPIPE_OUTPUT}/secrets-results.json"
+        echo "Secrets detected! Review ${SECUREPIPE_OUTPUT}/secrets-results.json"
         if [ "${SECUREPIPE_FAIL_ON_CRITICAL}" = "true" ]; then exit 1; fi
       fi
   artifacts:
@@ -56,13 +56,18 @@ gitleaks:
 semgrep:
   stage: sast
   image:
-    name: returntocorp/semgrep:latest
+    name: returntocorp/semgrep:1.64
     entrypoint: [""]
   script:
-    - semgrep --config auto --json --output ${SECUREPIPE_OUTPUT}/sast-results.json .
+    - mkdir -p ${SECUREPIPE_OUTPUT}
+    - semgrep --config ${SEMGREP_CONFIG:-auto} --json --output ${SECUREPIPE_OUTPUT}/sast-results.json .
     - |
-      COUNT=$(python3 -c "import json; print(len(json.load(open('${SECUREPIPE_OUTPUT}/sast-results.json')).get('results',[])))" 2>/dev/null || echo "0")
-      echo "🔍 Semgrep found ${COUNT} findings"
+      COUNT=$(jq '.results | length' ${SECUREPIPE_OUTPUT}/sast-results.json 2>/dev/null || echo "0")
+      echo "Semgrep found ${COUNT} findings"
+      CRITICAL=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' ${SECUREPIPE_OUTPUT}/sast-results.json 2>/dev/null || echo "0")
+      HIGH=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' ${SECUREPIPE_OUTPUT}/sast-results.json 2>/dev/null || echo "0")
+      if [ "${SECUREPIPE_FAIL_ON_CRITICAL}" = "true" ] && [ "$CRITICAL" -gt 0 ]; then echo "${CRITICAL} critical findings"; exit 1; fi
+      if [ "${SECUREPIPE_FAIL_ON_HIGH}" = "true" ] && [ "$HIGH" -gt 0 ]; then echo "${HIGH} high findings"; exit 1; fi
   artifacts:
     paths:
       - ${SECUREPIPE_OUTPUT}/sast-results.json
@@ -74,26 +79,18 @@ semgrep:
 trivy-dependencies:
   stage: dependencies
   image:
-    name: aquasec/trivy:latest
+    name: aquasec/trivy:0.51
     entrypoint: [""]
   script:
+    - mkdir -p ${SECUREPIPE_OUTPUT}
     - trivy fs --format json --output ${SECUREPIPE_OUTPUT}/dependency-results.json .
     - |
-      COUNT=$(python3 -c "
-      import json
-      d=json.load(open('${SECUREPIPE_OUTPUT}/dependency-results.json'))
-      total=sum(len(r.get('Vulnerabilities',[])) for r in d.get('Results',[]))
-      print(total)
-      " 2>/dev/null || echo "0")
-      echo "📦 Trivy found ${COUNT} dependency vulnerabilities"
-      if [ "${SECUREPIPE_FAIL_ON_HIGH}" = "true" ] && [ "$COUNT" -gt 0 ]; then
-        HIGH=$(python3 -c "
-      import json
-      d=json.load(open('${SECUREPIPE_OUTPUT}/dependency-results.json'))
-      print(sum(1 for r in d.get('Results',[]) for v in r.get('Vulnerabilities',[]) if v.get('Severity')=='HIGH'))
-      " 2>/dev/null || echo "0")
-        if [ "$HIGH" -gt 0 ]; then echo "❌ ${HIGH} HIGH vulnerabilities found"; exit 1; fi
-      fi
+      COUNT=$(jq '[.Results[]?.Vulnerabilities // [] | length] | add // 0' ${SECUREPIPE_OUTPUT}/dependency-results.json 2>/dev/null || echo "0")
+      echo "Trivy found ${COUNT} dependency vulnerabilities"
+      CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' ${SECUREPIPE_OUTPUT}/dependency-results.json 2>/dev/null || echo "0")
+      HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' ${SECUREPIPE_OUTPUT}/dependency-results.json 2>/dev/null || echo "0")
+      if [ "${SECUREPIPE_FAIL_ON_CRITICAL}" = "true" ] && [ "$CRITICAL" -gt 0 ]; then echo "${CRITICAL} CRITICAL vulnerabilities found"; exit 1; fi
+      if [ "${SECUREPIPE_FAIL_ON_HIGH}" = "true" ] && [ "$HIGH" -gt 0 ]; then echo "${HIGH} HIGH vulnerabilities found"; exit 1; fi
   artifacts:
     paths:
       - ${SECUREPIPE_OUTPUT}/dependency-results.json
@@ -105,16 +102,19 @@ trivy-dependencies:
 trivy-container:
   stage: container
   image:
-    name: aquasec/trivy:latest
+    name: aquasec/trivy:0.51
     entrypoint: [""]
   script:
+    - mkdir -p ${SECUREPIPE_OUTPUT}
     - |
       if [ -z "${SECUREPIPE_CONTAINER_IMAGE}" ]; then
-        echo "⚠️  SECUREPIPE_CONTAINER_IMAGE not set, skipping container scan"
+        echo "SECUREPIPE_CONTAINER_IMAGE not set, skipping container scan"
         exit 0
       fi
     - trivy image --format json --output ${SECUREPIPE_OUTPUT}/container-results.json ${SECUREPIPE_CONTAINER_IMAGE}
-    - echo "🐳 Container scan complete for ${SECUREPIPE_CONTAINER_IMAGE}"
+    - |
+      COUNT=$(jq '[.Results[]?.Vulnerabilities // [] | length] | add // 0' ${SECUREPIPE_OUTPUT}/container-results.json 2>/dev/null || echo "0")
+      echo "Container scan complete for ${SECUREPIPE_CONTAINER_IMAGE} — ${COUNT} vulnerabilities"
   artifacts:
     paths:
       - ${SECUREPIPE_OUTPUT}/container-results.json
@@ -125,10 +125,10 @@ trivy-container:
 hadolint:
   stage: container
   image:
-    name: hadolint/hadolint:latest-alpine
+    name: hadolint/hadolint:2.12-alpine
     entrypoint: [""]
   script:
-    - hadolint Dockerfile 2>/dev/null || echo "No Dockerfile found, skipping Hadolint"
+    - hadolint Dockerfile || echo "No Dockerfile found, skipping Hadolint"
   rules:
     - exists:
         - Dockerfile
@@ -138,19 +138,21 @@ hadolint:
 zap-baseline:
   stage: dast
   image:
-    name: owasp/zap2docker-stable:latest
+    name: owasp/zap2docker-stable:2.15
     entrypoint: [""]
   script:
+    - mkdir -p ${SECUREPIPE_OUTPUT}
     - |
       if [ -z "${SECUREPIPE_DAST_URL}" ]; then
-        echo "⚠️  SECUREPIPE_DAST_URL not set, skipping DAST"
+        echo "SECUREPIPE_DAST_URL not set, skipping DAST"
         exit 0
       fi
-    - zap-baseline.py -t ${SECUREPIPE_DAST_URL} -J dast-results.json || true
-    - cp /zap/json-report/dast-results.json ${SECUREPIPE_OUTPUT}/ 2>/dev/null || true
+    - zap-baseline.py -t ${SECUREPIPE_DAST_URL} -J dast-results.json -r ${SECUREPIPE_OUTPUT}/dast-results.html || true
+    - cp /zap/json-report/dast-results.json ${SECUREPIPE_OUTPUT}/dast-results.json 2>/dev/null || true
   artifacts:
     paths:
       - ${SECUREPIPE_OUTPUT}/dast-results.json
+      - ${SECUREPIPE_OUTPUT}/dast-results.html
     expire_in: 30 days
   rules:
     - if: $SECUREPIPE_SKIP_DAST != "true"
@@ -159,15 +161,19 @@ zap-baseline:
 cosign-sign:
   stage: signing
   image:
-    name: bitnami/cosign:latest
+    name: bitnami/cosign:2.4
     entrypoint: [""]
   script:
     - |
       if [ -z "${SECUREPIPE_CONTAINER_IMAGE}" ]; then
-        echo "⚠️  No container image to sign"
+        echo "No container image to sign"
         exit 0
       fi
-    - cosign sign --yes ${SECUREPIPE_CONTAINER_IMAGE} || echo "⚠️  Signing failed (COSIGN_KEY required)"
+      if [ -z "${COSIGN_KEY}" ]; then
+        echo "COSIGN_KEY not set, skipping signing"
+        exit 0
+      fi
+    - cosign sign --key env://COSIGN_KEY ${SECUREPIPE_CONTAINER_IMAGE} || echo "Signing failed"
   rules:
     - if: $SECUREPIPE_SKIP_SIGNING != "true"
 
@@ -175,11 +181,12 @@ cosign-sign:
 syft-sbom:
   stage: sbom
   image:
-    name: anchore/syft:latest
+    name: anchore/syft:1.11
     entrypoint: [""]
   script:
+    - mkdir -p ${SECUREPIPE_OUTPUT}
     - syft dir:./ -o cyclonedx-json > ${SECUREPIPE_OUTPUT}/sbom-cyclonedx.json
-    - echo "📋 SBOM generated"
+    - echo "SBOM generated"
   artifacts:
     paths:
       - ${SECUREPIPE_OUTPUT}/sbom-cyclonedx.json
@@ -190,11 +197,11 @@ syft-sbom:
 # ─── REPORT AGGREGATION ───────────────────────────────────────────────────
 securepipe-report:
   stage: report
-  image: python:3.11-slim
+  image: python:3.12-slim
   script:
-    - pip install jinja2 --quiet
+    - pip install pyyaml --quiet
     - python3 scripts/report-generator.py ${SECUREPIPE_OUTPUT} ${SECUREPIPE_OUTPUT}/securepipe-report.html
-    - echo "📊 Report generated: ${SECUREPIPE_OUTPUT}/securepipe-report.html"
+    - echo "Report generated: ${SECUREPIPE_OUTPUT}/securepipe-report.html"
   artifacts:
     paths:
       - ${SECUREPIPE_OUTPUT}/

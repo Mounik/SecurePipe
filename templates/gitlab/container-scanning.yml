@@ -9,15 +9,19 @@ variables:
 trivy-container:
   stage: container
   image:
-    name: aquasec/trivy:latest
+    name: aquasec/trivy:0.51
     entrypoint: [""]
   script:
+    - mkdir -p ${SECUREPIPE_OUTPUT}
     - |
       if [ -z "${SECUREPIPE_CONTAINER_IMAGE}" ]; then
         echo "Set SECUREPIPE_CONTAINER_IMAGE variable"
         exit 1
       fi
     - trivy image --format json --output ${SECUREPIPE_OUTPUT}/container-results.json ${SECUREPIPE_CONTAINER_IMAGE}
+    - |
+      COUNT=$(jq '[.Results[]?.Vulnerabilities // [] | length] | add // 0' ${SECUREPIPE_OUTPUT}/container-results.json 2>/dev/null || echo "0")
+      echo "Container scan found ${COUNT} vulnerabilities"
   artifacts:
     paths:
       - ${SECUREPIPE_OUTPUT}/
@@ -26,7 +30,7 @@ trivy-container:
 hadolint:
   stage: container
   image:
-    name: hadolint/hadolint:latest-alpine
+    name: hadolint/hadolint:2.12-alpine
     entrypoint: [""]
   script:
     - hadolint Dockerfile

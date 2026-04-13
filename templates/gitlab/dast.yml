@@ -9,17 +9,17 @@ variables:
 zap-baseline:
   stage: dast
   image:
-    name: owasp/zap2docker-stable:latest
+    name: owasp/zap2docker-stable:2.15
     entrypoint: [""]
   script:
+    - mkdir -p ${SECUREPIPE_OUTPUT}
     - |
       if [ -z "${SECUREPIPE_DAST_URL}" ]; then
         echo "Set SECUREPIPE_DAST_URL variable"
         exit 1
       fi
-    - zap-baseline.py -t ${SECUREPIPE_DAST_URL} -J dast-results.json || true
-    - mkdir -p ${SECUREPIPE_OUTPUT}
-    - cp /zap/json-report/dast-results.json ${SECUREPIPE_OUTPUT}/ 2>/dev/null || true
+    - zap-baseline.py -t ${SECUREPIPE_DAST_URL} -J dast-results.json -r ${SECUREPIPE_OUTPUT}/dast-results.html || true
+    - cp /zap/json-report/dast-results.json ${SECUREPIPE_OUTPUT}/dast-results.json 2>/dev/null || true
   artifacts:
     paths:
       - ${SECUREPIPE_OUTPUT}/
