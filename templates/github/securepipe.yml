@@ -1,0 +1,196 @@
+# ─── SecurePipe — GitHub Actions Pipeline ─────────────────────────────────
+# Use as a reusable workflow or copy into .github/workflows/
+#
+# Required secrets:
+#   COSIGN_KEY — Cosign private key for container signing (optional)
+#
+# Required variables (set in repo Settings > Variables):
+#   SECUREPIPE_CONTAINER_IMAGE — Container image to scan (optional)
+#   SECUREPIPE_DAST_URL — Target URL for DAST (optional)
+
+name: SecurePipe
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  SECUREPIPE_OUTPUT: securepipe-reports
+
+jobs:
+  secrets:
+    name: Secrets Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run Gitleaks
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$GITHUB_WORKSPACE/${{ env.SECUREPIPE_OUTPUT }}:/output" \
+            zricethezav/gitleaks:8.18 \
+            detect --source /repo --report-format json --report-path /output/secrets-results.json || true
+      - name: Check Results
+        run: |
+          FINDINGS=$(jq 'length' ${{ env.SECUREPIPE_OUTPUT }}/secrets-results.json 2>/dev/null || echo "0")
+          echo "Gitleaks found ${FINDINGS} secrets"
+          if [ "$FINDINGS" -gt 0 ] && [ "${{ vars.SECUREPIPE_FAIL_ON_CRITICAL || 'true' }}" = "true" ]; then
+            echo "::error::${FINDINGS} secrets detected"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: secrets-results
+          path: ${{ env.SECUREPIPE_OUTPUT }}/secrets-results.json
+
+  sast:
+    name: SAST
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Semgrep
+        run: |
+          mkdir -p ${{ env.SECUREPIPE_OUTPUT }}
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            returntocorp/semgrep:1.64 \
+            semgrep --config ${{ vars.SEMGREP_CONFIG || 'auto' }} --json --output /src/${{ env.SECUREPIPE_OUTPUT }}/sast-results.json /src || true
+      - name: Check Results
+        run: |
+          COUNT=$(jq '.results | length' ${{ env.SECUREPIPE_OUTPUT }}/sast-results.json 2>/dev/null || echo "0")
+          echo "Semgrep found ${COUNT} findings"
+          CRITICAL=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' ${{ env.SECUREPIPE_OUTPUT }}/sast-results.json 2>/dev/null || echo "0")
+          if [ "$CRITICAL" -gt 0 ]; then
+            echo "::error::${CRITICAL} critical SAST findings"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sast-results
+          path: ${{ env.SECUREPIPE_OUTPUT }}/sast-results.json
+
+  dependencies:
+    name: Dependency Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy
+        run: |
+          mkdir -p ${{ env.SECUREPIPE_OUTPUT }}
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$GITHUB_WORKSPACE/${{ env.SECUREPIPE_OUTPUT }}:/output" \
+            aquasec/trivy:0.51 \
+            fs --format json --output /output/dependency-results.json /repo || true
+      - name: Check Results
+        run: |
+          COUNT=$(jq '[.Results[]?.Vulnerabilities // [] | length] | add // 0' ${{ env.SECUREPIPE_OUTPUT }}/dependency-results.json 2>/dev/null || echo "0")
+          echo "Trivy found ${COUNT} dependency vulnerabilities"
+          CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' ${{ env.SECUREPIPE_OUTPUT }}/dependency-results.json 2>/dev/null || echo "0")
+          if [ "$CRITICAL" -gt 0 ] && [ "${{ vars.SECUREPIPE_FAIL_ON_CRITICAL || 'true' }}" = "true" ]; then
+            echo "::error::${CRITICAL} CRITICAL vulnerabilities found"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dependency-results
+          path: ${{ env.SECUREPIPE_OUTPUT }}/dependency-results.json
+
+  container:
+    name: Container Scanning
+    runs-on: ubuntu-latest
+    if: vars.SECUREPIPE_CONTAINER_IMAGE != ''
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy Image Scan
+        run: |
+          mkdir -p ${{ env.SECUREPIPE_OUTPUT }}
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/${{ env.SECUREPIPE_OUTPUT }}:/output" \
+            aquasec/trivy:0.51 \
+            image --format json --output /output/container-results.json ${{ vars.SECUREPIPE_CONTAINER_IMAGE }} || true
+      - name: Run Hadolint
+        run: |
+          if [ -f Dockerfile ]; then
+            docker run --rm -i hadolint/hadolint:2.12-alpine < Dockerfile || true
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: container-results
+          path: ${{ env.SECUREPIPE_OUTPUT }}/container-results.json
+
+  dast:
+    name: DAST
+    runs-on: ubuntu-latest
+    if: vars.SECUREPIPE_DAST_URL != ''
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run OWASP ZAP
+        run: |
+          mkdir -p ${{ env.SECUREPIPE_OUTPUT }}
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/${{ env.SECUREPIPE_OUTPUT }}:/output" \
+            owasp/zap2docker-stable:2.15 \
+            zap-baseline.py -t ${{ vars.SECUREPIPE_DAST_URL }} -J dast-results.json -r /output/dast-results.html || true
+          cp ${{ env.SECUREPIPE_OUTPUT }}/dast-results.json ${{ env.SECUREPIPE_OUTPUT }}/dast-results.json 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dast-results
+          path: ${{ env.SECUREPIPE_OUTPUT }}/dast-results.*
+
+  signing:
+    name: Container Signing
+    runs-on: ubuntu-latest
+    if: vars.SECUREPIPE_CONTAINER_IMAGE != '' && secrets.COSIGN_KEY != ''
+    needs: [container]
+    steps:
+      - name: Sign with Cosign
+        env:
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+        run: |
+          docker run --rm \
+            -e COSIGN_KEY \
+            bitnami/cosign:2.4 \
+            sign --key env://COSIGN_KEY ${{ vars.SECUREPIPE_CONTAINER_IMAGE }} || echo "Signing failed"
+
+  sbom:
+    name: SBOM Generation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate SBOM
+        run: |
+          mkdir -p ${{ env.SECUREPIPE_OUTPUT }}
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            -v "$GITHUB_WORKSPACE/${{ env.SECUREPIPE_OUTPUT }}:/output" \
+            anchore/syft:1.11 \
+            dir:/src -o cyclonedx-json > ${{ env.SECUREPIPE_OUTPUT }}/sbom-cyclonedx.json || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-results
+          path: ${{ env.SECUREPIPE_OUTPUT }}/sbom-cyclonedx.json
+
+  report:
+    name: Report Aggregation
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [secrets, sast, dependencies, container, dast, sbom]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ env.SECUREPIPE_OUTPUT }}
+          merge-multiple: true
+      - name: Generate Report
+        run: |
+          pip install pyyaml --quiet
+          python3 scripts/report-generator.py ${{ env.SECUREPIPE_OUTPUT }} ${{ env.SECUREPIPE_OUTPUT }}/securepipe-report.html || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: securepipe-report
+          path: ${{ env.SECUREPIPE_OUTPUT }}/securepipe-report.html
