@@ -13,33 +13,25 @@ sast:
     - path/to/custom-rules.yml
 ```
 
-## Custom Trivy Policies
+Or use the `SEMGREP_CONFIG` environment variable in CI:
 
-Create Rego policies for custom checks:
-
-```rego
-# custom-policy.rego
-package trivy
-
-deny[msg] {
-  input.resource.container.image.tag == "latest"
-  msg := sprintf("Image uses :latest tag: %s", [input.resource.container.image.name])
-}
-```
-
-Reference in config:
 ```yaml
-container:
-  trivy_policy: custom-policy.rego
+# GitLab CI
+variables:
+  SEMGREP_CONFIG: "p/python,p/owasp-top-ten"
 ```
 
-## Custom Report Templates
+## Severity Thresholds
 
-Override the default HTML report by providing a Jinja2 template:
+Control which findings cause pipeline failure:
 
 ```yaml
 settings:
-  report_template: path/to/custom-template.html
+  fail_on_critical: true
+  fail_on_high: false
+
+container:
+  severity_threshold: HIGH  # Only report HIGH and CRITICAL
 ```
 
 ## Pipeline Stages
@@ -75,3 +67,35 @@ backend:scan:
   only:
     changes:
       - backend/**
+```
+
+## CVE Whitelisting
+
+Ignore specific CVEs that are false positives for your project:
+
+```yaml
+dependencies:
+  ignore_cves:
+    - CVE-2023-XXXX  # Not applicable — using vendored patch
+```
+
+## Docker Image Versions
+
+All scanner images are pinned to specific versions for reproducibility. You can override these in the CLI script by editing the image variables at the top of `securepipe.sh`:
+
+```bash
+SEMGREP_IMAGE="returntocorp/semgrep:1.64"
+GITLEAKS_IMAGE="zricethezav/gitleaks:8.18"
+TRIVY_IMAGE="aquasec/trivy:0.51"
+```
+
+## Pre-commit Hooks
+
+Use SecurePipe's pre-commit configuration for local scanning:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+See `.pre-commit-config.yaml` for the available hooks (Gitleaks, Hadolint).

@@ -1,22 +1,22 @@
-# SecurePipe 🔒
+# SecurePipe
 
 **Production-ready DevSecOps pipeline — drop-in security for any CI/CD**
 
 SecurePipe is a complete, opinionated DevSecOps pipeline template that secures every stage of your software delivery. One configuration file, full security coverage.
 
-## 🛡️ Security Stages
+## Security Stages
 
 | Stage | Tool | What it detects |
 |-------|------|-----------------|
-| **SAST** | Semgrep + CodeQL | Code vulnerabilities, anti-patterns |
+| **SAST** | Semgrep | Code vulnerabilities, anti-patterns |
 | **Secrets** | Gitleaks | API keys, tokens, passwords in code |
-| **Dependencies** | OWASP Dep-Check + Trivy | Known CVEs in dependencies |
+| **Dependencies** | Trivy | Known CVEs in dependencies |
 | **Container** | Trivy + Hadolint | Image vulnerabilities, Dockerfile issues |
 | **DAST** | OWASP ZAP | Runtime vulnerabilities in running app |
-| **Signing** | Cosign + Syft | Image signing, attestation, provenance |
-| **SBOM** | Syft | Software Bill of Materials (SPDX/CycloneDX) |
+| **Signing** | Cosign | Image signing, attestation, provenance |
+| **SBOM** | Syft | Software Bill of Materials (CycloneDX) |
 
-## 🚀 Quick Start
+## Quick Start
 
 ### GitLab CI
 
@@ -24,6 +24,10 @@ SecurePipe is a complete, opinionated DevSecOps pipeline template that secures e
 include:
   - remote: 'https://raw.githubusercontent.com/Mounik/SecurePipe/main/templates/gitlab/full-pipeline.yml'
 ```
+
+### GitHub Actions
+
+Copy `templates/github/securepipe.yml` into `.github/workflows/`.
 
 ### Jenkins
 
@@ -45,34 +49,34 @@ securePipeFullScan()
 
 # Generate HTML report
 ./securepipe.sh scan --all --report html
+
+# Verbose mode (debug output)
+./securepipe.sh scan --all --verbose
 ```
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 SecurePipe/
+├── .github/workflows/    # Self-testing CI pipeline
 ├── templates/
+│   ├── github/           # GitHub Actions workflow
+│   │   └── securepipe.yml
 │   ├── gitlab/           # GitLab CI templates
 │   │   ├── full-pipeline.yml
 │   │   ├── sast.yml
 │   │   ├── container-scanning.yml
 │   │   ├── dependency-check.yml
-│   │   ├── secrets-detection.yml
+│   │   ├── secrets.yml
 │   │   ├── dast.yml
 │   │   └── signing.yml
 │   └── jenkins/          # Jenkins shared library
 │       └── vars/
 │           └── securePipeFullScan.groovy
 ├── scripts/
-│   ├── sast/             # SAST runner scripts
-│   ├── container/        # Container scanning scripts
-│   ├── dependency/        # Dependency check scripts
-│   ├── secrets/          # Secrets detection scripts
-│   ├── dast/             # DAST runner scripts
-│   ├── signing/          # Signing & attestation scripts
-│   └── sbom/             # SBOM generation scripts
-├── reports/
-│   └── templates/        # HTML/JSON report templates
+│   └── report-generator.py   # HTML/JSON report aggregation
+├── tests/
+│   └── test_securepipe.sh    # Test suite
 ├── docs/
 │   ├── configuration.md
 │   ├── customization.md
@@ -82,25 +86,24 @@ SecurePipe/
 └── securepipe.sh         # CLI entry point
 ```
 
-## ⚙️ Configuration
+## Configuration
 
 Create `.securepipe.yml` in your project root:
 
 ```yaml
 version: "1.0"
 
-# Global settings
 settings:
   fail_on_critical: true
   fail_on_high: true
   report_format: html
   output_dir: securepipe-reports/
 
-# Stage configuration
 sast:
   enabled: true
-  tools: [semgrep, codeql]
+  tools: [semgrep]
   languages: [python, javascript, go]
+  custom_rules: auto
 
 secrets:
   enabled: true
@@ -108,13 +111,14 @@ secrets:
 
 dependencies:
   enabled: true
-  tools: [trivy, owasp-depcheck]
+  tools: [trivy]
   ignore_cves: []
 
 container:
   enabled: true
   tools: [trivy, hadolint]
-  image: "${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHA}"
+  image: ""
+  severity_threshold: ""
 
 dast:
   enabled: true
@@ -124,45 +128,49 @@ dast:
 signing:
   enabled: true
   tools: [cosign]
-  registry: "${CI_REGISTRY}"
 
 sbom:
   enabled: true
   format: cyclonedx
 ```
 
-## 🎯 Features
+## Features
 
-- **Zero-config defaults** — works out of the box for most projects
+- **Config-driven** — `.securepipe.yml` controls stages, thresholds, and tools
 - **Fail-fast mode** — break the pipeline on critical/high findings
-- **HTML reports** — beautiful, shareable security reports
-- **CVE whitelisting** — ignore known false positives via `.securepipe.yml`
-- **Multi-language** — Python, JavaScript, Go, Java, Docker
-- **Multi-CI** — GitLab CI, Jenkins, GitHub Actions (coming soon)
-- **Offline mode** — air-gapped environments supported
-- **Compliance mapping** — CIS, OWASP Top 10, NIST references
+- **Severity-based gates** — `fail_on_critical` and `fail_on_high` per stage
+- **HTML/JSON reports** — security reports with severity breakdown
+- **CVE whitelisting** — ignore known false positives via config
+- **Custom Semgrep rules** — pass custom rulesets through config or CLI
+- **Multi-CI** — GitLab CI, Jenkins, GitHub Actions
+- **Input validation** — image names and URLs are sanitized
+- **Resource limits** — all Docker scanners run with memory/CPU/PID limits
+- **Pinned images** — all scanner images use specific versions, not `:latest`
+- **Pre-commit hooks** — Gitleaks + Hadolint available via `.pre-commit-config.yaml`
 
-## 🔧 Requirements
+## Requirements
 
 - Docker (for containerized scanners)
+- jq (for result parsing)
 - Git (for secrets detection)
-- Optional: Semgrep, Trivy, Gitleaks (if running locally)
+- Optional: yq (for config parsing — falls back to python3 + PyYAML)
 
-## 📊 Example Report
+## Testing
 
-SecurePipe generates HTML reports with severity breakdown, CVE details, and remediation guidance.
+```bash
+bash tests/test_securepipe.sh
+```
 
-## 🤝 Use Cases
+## Use Cases
 
-- **Freelance DevSecOps** — Drop this into any client's CI/CD, charge for setup + maintenance
+- **Freelance DevSecOps** — Drop this into any client's CI/CD
 - **Security audits** — Run standalone scans, deliver professional reports
-- **Compliance** — Map findings to CIS, OWASP, NIST frameworks
 - **Team onboarding** — Consistent security checks across all projects
 
-## 📄 License
+## License
 
 MIT License — use it, sell it, deploy it.
 
 ---
 
-Built by [Mounik](https://github.com/Mounik) — DevSecOps Engineer | [docker-stacks](https://github.com/Mounik/docker-stacks) | [devops-toolkit](https://github.com/Mounik/devops-toolkit)
+Built by [Mounik](https://github.com/Mounik)

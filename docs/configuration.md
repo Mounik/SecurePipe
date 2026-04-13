@@ -17,7 +17,7 @@ settings:
   fail_on_high: true        # default: true
   
   # Report output format
-  report_format: html       # html | json | sarif
+  report_format: html       # html | json
   
   # Output directory
   output_dir: securepipe-reports/
@@ -28,12 +28,12 @@ settings:
 ```yaml
 sast:
   enabled: true
-  tools: [semgrep, codeql]
+  tools: [semgrep]
   languages: [python, javascript, go, java, dockerfile, yaml]
-  # Custom Semgrep rules
-  custom_rules: []
-  # Skip specific rules
-  skip_rules: []
+  # Custom Semgrep rules (comma-separated or "auto")
+  custom_rules: auto
+  # Or specify custom rulesets:
+  # custom_rules: ["p/python", "p/owasp-top-ten", "path/to/rules.yml"]
 
 secrets:
   enabled: true
@@ -43,7 +43,7 @@ secrets:
 
 dependencies:
   enabled: true
-  tools: [trivy, owasp-depcheck]
+  tools: [trivy]
   # CVE whitelist — these won't fail the pipeline
   ignore_cves:
     - CVE-2023-XXXX
@@ -54,26 +54,23 @@ container:
   enabled: true
   tools: [trivy, hadolint]
   image: "${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHA}"
-  # Only fail on HIGH and CRITICAL
+  # Only report findings at this severity and above
   severity_threshold: HIGH
 
 dast:
   enabled: true
   tools: [zap]
   target_url: "http://localhost:8080"
-  # Scan timeout in minutes
-  timeout: 30
 
 signing:
   enabled: true
   tools: [cosign]
-  registry: "${CI_REGISTRY}"
-  # Keyless signing (default) or key-based
+  # Keyless signing (default) or key-based (requires COSIGN_KEY env var)
   keyless: true
 
 sbom:
   enabled: true
-  # cyclonedx | spdx | syft-json
+  # cyclonedx
   format: cyclonedx
 ```
 
@@ -94,6 +91,27 @@ sbom:
 | `SECUREPIPE_SKIP_SBOM` | `false` | Skip SBOM generation |
 | `SECUREPIPE_CONTAINER_IMAGE` | — | Image to scan/sign |
 | `SECUREPIPE_DAST_URL` | — | Target URL for DAST |
+| `COSIGN_KEY` | — | Cosign private key for signing |
+
+## CLI Options
+
+```
+Usage: securepipe.sh scan [OPTIONS]
+
+Options:
+  --all          Run all stages
+  --sast         Static analysis
+  --secrets      Secrets detection
+  --deps         Dependency scanning
+  --container IMG  Container scanning
+  --dast URL     Dynamic testing
+  --signing IMG  Sign container image
+  --sbom         Generate SBOM
+  --report FMT   Report format (html|json)
+  --output DIR   Output directory
+  --config FILE  Config file path
+  --verbose      Show debug output
+```
 
 ## GitLab CI Setup
 
@@ -122,6 +140,17 @@ include:
 include:
   - remote: 'https://raw.githubusercontent.com/Mounik/SecurePipe/main/templates/gitlab/sast.yml'
   - remote: 'https://raw.githubusercontent.com/Mounik/SecurePipe/main/templates/gitlab/secrets.yml'
+```
+
+## GitHub Actions Setup
+
+Copy `templates/github/securepipe.yml` into `.github/workflows/` or use it directly:
+
+```yaml
+# .github/workflows/securepipe.yml
+# See templates/github/securepipe.yml for full configuration
+# Set repository variables: SECUREPIPE_CONTAINER_IMAGE, SECUREPIPE_DAST_URL
+# Set repository secret: COSIGN_KEY (if signing)
 ```
 
 ## Jenkins Setup
@@ -153,4 +182,15 @@ securePipeFullScan(
 
 # Custom output
 ./securepipe.sh scan --all --output ./my-reports --report html
+
+# Verbose mode
+./securepipe.sh scan --all --verbose
 ```
+
+## Config Parsing
+
+SecurePipe parses `.securepipe.yml` using:
+1. **yq** (preferred) — fast, native YAML processor
+2. **python3 + PyYAML** (fallback) — used when yq is not installed
+
+Environment variables always override config file settings.
