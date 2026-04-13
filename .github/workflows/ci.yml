@@ -1,0 +1,68 @@
+name: SecurePipe CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint & Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck jq
+          pip install pyyaml --quiet
+      - name: ShellCheck
+        run: shellcheck securepipe.sh || true
+      - name: Python lint
+        run: python3 -m py_compile scripts/report-generator.py
+      - name: Validate YAML configs
+        run: |
+          python3 -c "import yaml; yaml.safe_load(open('.securepipe.yml'))"
+      - name: Run tests
+        run: bash tests/test_securepipe.sh
+
+  secrets-scan:
+    name: Secrets Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks
+        run: |
+          mkdir -p securepipe-reports
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$GITHUB_WORKSPACE/securepipe-reports:/output" \
+            zricethezav/gitleaks:8.18 \
+            detect --source /repo --report-format json --report-path /output/secrets-results.json || true
+          FINDINGS=$(jq 'length' securepipe-reports/secrets-results.json 2>/dev/null || echo "0")
+          echo "Gitleaks found ${FINDINGS} secrets"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: secrets-results
+          path: securepipe-reports/secrets-results.json
+
+  sast-scan:
+    name: SAST
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep
+        run: |
+          mkdir -p securepipe-reports
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            returntocorp/semgrep:1.64 \
+            semgrep --config auto --json --output /src/securepipe-reports/sast-results.json /src || true
+          COUNT=$(jq '.results | length' securepipe-reports/sast-results.json 2>/dev/null || echo "0")
+          echo "Semgrep found ${COUNT} findings"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sast-results
+          path: securepipe-reports/sast-results.json
