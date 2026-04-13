@@ -3,11 +3,14 @@
 SecurePipe Report Generator
 Aggregates all scan results into a single HTML report.
 """
+
 import json
 import os
 import sys
 from datetime import datetime
 from pathlib import Path
+
+MAX_FINDINGS_PER_STAGE = 200
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -51,12 +54,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .severity-INFO {{ background: #8b949e20; color: #8b949e; }}
   .timestamp {{ color: #484f58; font-size: 0.8rem; margin-bottom: 1rem; }}
   .no-findings {{ color: #3fb950; padding: 1rem 0; }}
+  .truncated {{ color: #d29922; font-size: 0.85rem; padding: 0.5rem 0; font-style: italic; }}
   footer {{ text-align: center; color: #484f58; margin-top: 2rem; font-size: 0.85rem; }}
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>🔒 SecurePipe Report</h1>
+  <h1>SecurePipe Report</h1>
   <h2>DevSecOps Pipeline Scan Results</h2>
   <p class="timestamp">Generated: {timestamp}</p>
 
@@ -67,11 +71,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   {stages_html}
 
   <footer>
-    SecurePipe v1.0.0 — <a href="https://github.com/Mounik/SecurePipe" style="color:#58a6ff">github.com/Mounik/SecurePipe</a>
+    SecurePipe v1.0.0
   </footer>
 </div>
-</body>
 </html>"""
+
 
 def load_json(path):
     try:
@@ -80,85 +84,145 @@ def load_json(path):
     except (FileNotFoundError, json.JSONDecodeError):
         return None
 
+
 def count_severity(vulns, severity):
-    return sum(1 for v in vulns if v.get("Severity", v.get("severity", "")).upper() == severity)
+    return sum(
+        1 for v in vulns if v.get("Severity", v.get("severity", "")).upper() == severity
+    )
+
 
 def process_secrets(data):
     findings = []
+    total = 0
     if isinstance(data, list):
-        for item in data[:50]:
-            findings.append({
-                "rule": item.get("RuleID", "Secret detected"),
-                "file": f"{item.get('File', '')}:{item.get('StartLine', '')}",
-                "message": f"Potential {item.get('Secret', '***')[:20]}... ({item.get('Detector', 'unknown')})",
-                "severity": "CRITICAL"
-            })
-    return findings
+        total = len(data)
+        for item in data[:MAX_FINDINGS_PER_STAGE]:
+            findings.append(
+                {
+                    "rule": item.get("RuleID", "Secret detected"),
+                    "file": f"{item.get('File', '')}:{item.get('StartLine', '')}",
+                    "message": f"Potential {item.get('Secret', '***')[:20]}... ({item.get('Detector', 'unknown')})",
+                    "severity": "CRITICAL",
+                }
+            )
+    return findings, total
+
 
 def process_sast(data):
     findings = []
+    total = 0
     results = data.get("results", []) if isinstance(data, dict) else []
-    for r in results[:50]:
+    total = len(results)
+    for r in results[:MAX_FINDINGS_PER_STAGE]:
         sev = r.get("extra", {}).get("severity", "INFO").upper()
-        if sev == "ERROR": sev = "HIGH"
-        findings.append({
-            "rule": r.get("check_id", "Unknown rule"),
-            "file": f"{r.get('path', '')}:{r.get('start', {}).get('line', '')}",
-            "message": r.get("extra", {}).get("message", ""),
-            "severity": sev
-        })
-    return findings
+        if sev == "ERROR":
+            sev = "HIGH"
+        findings.append(
+            {
+                "rule": r.get("check_id", "Unknown rule"),
+                "file": f"{r.get('path', '')}:{r.get('start', {}).get('line', '')}",
+                "message": r.get("extra", {}).get("message", ""),
+                "severity": sev,
+            }
+        )
+    return findings, total
+
 
 def process_deps(data):
     findings = []
+    total = 0
     results = data.get("Results", []) if isinstance(data, dict) else []
     for r in results:
-        for v in r.get("Vulnerabilities", [])[:30]:
-            findings.append({
-                "rule": v.get("VulnerabilityID", "CVE"),
-                "file": r.get("Target", ""),
-                "message": f"{v.get('Title', '')} — {v.get('PrimaryPackage', v.get('PkgName', ''))} {v.get('InstalledVersion', '')}",
-                "severity": v.get("Severity", "UNKNOWN").upper()
-            })
-    return findings[:50]
+        vulns = r.get("Vulnerabilities", [])
+        total += len(vulns)
+        for v in vulns[:MAX_FINDINGS_PER_STAGE]:
+            findings.append(
+                {
+                    "rule": v.get("VulnerabilityID", "CVE"),
+                    "file": r.get("Target", ""),
+                    "message": f"{v.get('Title', '')} — {v.get('PrimaryPackage', v.get('PkgName', ''))} {v.get('InstalledVersion', '')}",
+                    "severity": v.get("Severity", "UNKNOWN").upper(),
+                }
+            )
+    if len(findings) > MAX_FINDINGS_PER_STAGE:
+        findings = findings[:MAX_FINDINGS_PER_STAGE]
+    return findings, total
+
 
 def process_container(data):
     findings = []
+    total = 0
     if isinstance(data, dict):
         for r in data.get("Results", []):
-            for v in r.get("Vulnerabilities", [])[:20]:
-                findings.append({
-                    "rule": v.get("VulnerabilityID", ""),
-                    "file": r.get("Target", ""),
-                    "message": f"{v.get('Title', '')} — {v.get('PkgName', '')} {v.get('InstalledVersion', '')}",
-                    "severity": v.get("Severity", "UNKNOWN").upper()
-                })
-    return findings[:50]
+            vulns = r.get("Vulnerabilities", [])
+            total += len(vulns)
+            for v in vulns[:MAX_FINDINGS_PER_STAGE]:
+                findings.append(
+                    {
+                        "rule": v.get("VulnerabilityID", ""),
+                        "file": r.get("Target", ""),
+                        "message": f"{v.get('Title', '')} — {v.get('PkgName', '')} {v.get('InstalledVersion', '')}",
+                        "severity": v.get("Severity", "UNKNOWN").upper(),
+                    }
+                )
+    if len(findings) > MAX_FINDINGS_PER_STAGE:
+        findings = findings[:MAX_FINDINGS_PER_STAGE]
+    return findings, total
+
+
+def process_dast(data):
+    findings = []
+    total = 0
+    if isinstance(data, dict):
+        alerts = data.get("alerts") or data.get("site", [{}])
+        if isinstance(alerts, list):
+            total = len(alerts)
+            for alert in alerts[:MAX_FINDINGS_PER_STAGE]:
+                findings.append(
+                    {
+                        "rule": alert.get("alert", alert.get("name", "ZAP Finding")),
+                        "file": alert.get("url", "N/A"),
+                        "message": alert.get("desc", alert.get("description", "")),
+                        "severity": alert.get(
+                            "riskcode", alert.get("risk", "INFO")
+                        ).upper(),
+                    }
+                )
+    return findings, total
+
 
 STAGES = [
-    ("secrets", "🔐 Secrets Detection", "secrets-results.json", process_secrets),
-    ("sast", "🔍 SAST", "sast-results.json", process_sast),
-    ("deps", "📦 Dependencies", "dependency-results.json", process_deps),
-    ("container", "🐳 Container", "container-results.json", process_container),
+    ("secrets", "Secrets Detection", "secrets-results.json", process_secrets),
+    ("sast", "SAST", "sast-results.json", process_sast),
+    ("deps", "Dependencies", "dependency-results.json", process_deps),
+    ("container", "Container", "container-results.json", process_container),
+    ("dast", "DAST", "dast-results.json", process_dast),
 ]
+
 
 def main():
     report_dir = sys.argv[1] if len(sys.argv) > 1 else "securepipe-reports"
-    output_file = sys.argv[2] if len(sys.argv) > 2 else f"{report_dir}/securepipe-report.html"
+    output_file = (
+        sys.argv[2] if len(sys.argv) > 2 else f"{report_dir}/securepipe-report.html"
+    )
 
     all_findings = {}
+    all_totals = {}
     totals = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
 
     for key, name, filename, processor in STAGES:
         data = load_json(os.path.join(report_dir, filename))
-        findings = processor(data) if data else []
+        if data:
+            findings, total = processor(data)
+        else:
+            findings, total = [], 0
         all_findings[key] = findings
+        all_totals[key] = total
         for f in findings:
             sev = f.get("severity", "INFO").upper()
             if sev in totals:
                 totals[sev] += 1
 
-    # Summary cards
     summary_cards = ""
     card_defs = [
         ("CRITICAL", totals["CRITICAL"]),
@@ -171,10 +235,10 @@ def main():
         cls = "clean" if count == 0 else label.lower()
         summary_cards += f'<div class="card"><div class="card-title">{label}</div><div class="card-value {cls}">{count}</div></div>\n'
 
-    # Stage HTML
     stages_html = ""
     for key, name, filename, _ in STAGES:
         findings = all_findings.get(key, [])
+        total = all_totals.get(key, 0)
         if not findings:
             badge_cls = "pass"
             badge_text = "PASSED"
@@ -187,27 +251,29 @@ def main():
 
         body = ""
         if not findings:
-            body = '<div class="no-findings">✓ No findings</div>'
+            body = '<div class="no-findings">No findings</div>'
         else:
             for f in findings:
-                body += f'''<div class="finding">
+                body += f"""<div class="finding">
                     <div class="finding-rule"><span class="severity severity-{f["severity"]}">{f["severity"]}</span>{f["rule"]}</div>
                     <div class="finding-file">{f["file"]}</div>
                     <div class="finding-message">{f["message"]}</div>
-                </div>\n'''
+                </div>\n"""
+            if total > len(findings):
+                body += f'<div class="truncated">Showing {len(findings)} of {total} findings — see raw JSON for complete results</div>\n'
 
-        stages_html += f'''<div class="stage">
+        stages_html += f"""<div class="stage">
             <div class="stage-header">
                 <span class="stage-name">{name}</span>
                 <span class="stage-badge badge-{badge_cls}">{badge_text}</span>
             </div>
             <div class="stage-body">{body}</div>
-        </div>\n'''
+        </div>\n"""
 
     html = HTML_TEMPLATE.format(
         timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
         summary_cards=summary_cards,
-        stages_html=stages_html
+        stages_html=stages_html,
     )
 
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
@@ -215,6 +281,7 @@ def main():
         f.write(html)
 
     print(f"Report generated: {output_file}")
+
 
 if __name__ == "__main__":
     main()

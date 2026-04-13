@@ -8,8 +8,9 @@ settings:
 
 sast:
   enabled: true
-  tools: [semgrep, codeql]
+  tools: [semgrep]
   languages: [python, javascript, go, dockerfile, yaml]
+  custom_rules: auto
 
 secrets:
   enabled: true
@@ -17,13 +18,14 @@ secrets:
 
 dependencies:
   enabled: true
-  tools: [trivy, owasp-depcheck]
+  tools: [trivy]
   ignore_cves: []
 
 container:
   enabled: true
   tools: [trivy, hadolint]
   image: ""
+  severity_threshold: ""
 
 dast:
   enabled: true
