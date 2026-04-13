@@ -1,4 +1,5 @@
 # SecurePipe
+![CI](https://github.com/Mounik/SecurePipe/actions/workflows/ci.yml/badge.svg)
 
 **Production-ready DevSecOps pipeline — drop-in security for any CI/CD**
 
