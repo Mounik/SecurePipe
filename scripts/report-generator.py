@@ -7,7 +7,7 @@ Aggregates all scan results into a single HTML report.
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 MAX_FINDINGS_PER_STAGE = 200
@@ -271,7 +271,7 @@ def main():
         </div>\n"""
 
     html = HTML_TEMPLATE.format(
-        timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         summary_cards=summary_cards,
         stages_html=stages_html,
     )
